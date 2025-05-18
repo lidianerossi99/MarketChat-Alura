@@ -1,0 +1,16 @@
+# Arquivo de variáveis de ambiente local (NÃO ENVIAR!)
+.env
+
+# Pasta de ambiente virtual
+venv/
+env/
+*.venv/
+
+# Arquivos compilados do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos de sistema operacional
+.DS_Store
+Thumbs.db

@@ -1,0 +1,173 @@
+import requests
+import json
+import re
+import os
+
+try:
+    from google.colab import userdata
+    API_KEY = userdata.get('GOOGLE_API_KEY')
+    CSE_ID = userdata.get('GOOGLE_CSE_ID')
+except ImportError:
+    from dotenv import load_dotenv
+    load_dotenv()
+    API_KEY = os.getenv('GOOGLE_API_KEY')
+    CSE_ID = os.getenv('GOOGLE_CSE_ID')
+
+    if not API_KEY or not CSE_ID:
+        print("AVISO: ⚠️ GOOGLE_API_KEY ou GOOGLE_CSE_ID não encontradas.")
+        print("Defina-as como variáveis de ambiente ou em um arquivo .env para que o chatbot funcione.")
+
+
+def buscar_produtos_google_shopping(query_usuario, num_resultados_desejados=3, nome_refinamento_cse=None):
+    termo_de_busca_base = query_usuario
+
+    # Pedimos o máximo (10) à API para ter mais chances de encontrar domínios únicos
+    num_resultados_api = 10
+
+    if nome_refinamento_cse:
+        termo_de_busca = f"{termo_de_busca_base} more:{nome_refinamento_cse}"
+    else:
+        termo_de_busca = termo_de_busca_base
+
+    url_api = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        'key': API_KEY,
+        'cx': CSE_ID,
+        'q': termo_de_busca,
+        'num': num_resultados_api,
+        'hl': 'pt-BR',
+        'gl': 'br',
+        'cr': 'countryBR'
+    }
+
+    produtos_brutos_api = [] # Lista para armazenar todos os resultados da API
+
+    if not API_KEY or not CSE_ID:
+        print("Chatbot: ⚠️ Chaves da API não configuradas. Não é possível buscar produtos.")
+        return [] # Retorna lista vazia
+
+    try:
+        response = requests.get(url_api, params=params)
+        response.raise_for_status()
+        resultados_json = response.json()
+
+        if 'items' in resultados_json and len(resultados_json['items']) > 0:
+            # Coleta todos os produtos brutos retornados pela API
+            for item in resultados_json['items']:
+                loja_display_link = item.get('displayLink', '') # Usar para loja_display e para derivar loja_dominio_raiz
+                loja_dominio = loja_display_link.lower()
+                partes_dominio = loja_dominio.split('.')
+
+                loja_dominio_raiz_calculada = loja_dominio # Default se não puder simplificar
+                if len(partes_dominio) >= 2:
+                    # Pega as duas últimas partes (ex: 'mercadolivre.com.br')
+                    # Isso é uma simplificação e pode precisar de ajustes para TLDs complexos (ex: .co.uk)
+                    # mas para .com, .com.br, etc., geralmente funciona.
+                    if partes_dominio[-1] == 'br' and len(partes_dominio) >= 3: # Ex: .com.br
+                        loja_dominio_raiz_calculada = f"{partes_dominio[-3]}.{partes_dominio[-2]}.{partes_dominio[-1]}"
+                    else: # Ex: .com
+                        loja_dominio_raiz_calculada = f"{partes_dominio[-2]}.{partes_dominio[-1]}"
+
+                produto = {
+                    'nome': item.get('title', 'Nome não disponível'),
+                    'link': item.get('link', '#'),
+                    'snippet': item.get('snippet', 'Descrição não disponível').replace('\n', ' '),
+                    'loja_display': loja_display_link if loja_display_link else 'Loja não informada',
+                    'loja_dominio_raiz': loja_dominio_raiz_calculada
+                }
+                produtos_brutos_api.append(produto)
+
+            # Agora filtramos para ter marketplaces únicos
+            sugestoes_finais = []
+            dominios_ja_adicionados = set()
+
+            for p in produtos_brutos_api:
+                if len(sugestoes_finais) < num_resultados_desejados:
+                    # Adiciona apenas se o domínio raiz não for vazio e não tiver sido adicionado
+                    if p['loja_dominio_raiz'] and p['loja_dominio_raiz'] not in dominios_ja_adicionados:
+                        sugestoes_finais.append(p)
+                        dominios_ja_adicionados.add(p['loja_dominio_raiz'])
+                else:
+                    break # Já temos o número desejado de sugestões únicas
+
+            return sugestoes_finais
+        else:
+            # API não retornou 'items' ou a lista de 'items' está vazia
+            return []
+
+
+    except requests.exceptions.HTTPError as http_err:
+        print(f"Chatbot: Ops! 😟 Ocorreu um erro ao tentar buscar os produtos (HTTP: {http_err}).")
+        if 'response' in locals() and response is not None:
+             if response.status_code == 429:
+                print("Chatbot: Parece que atingi o limite de consultas à API por hoje. 🕒 Por favor, tente novamente mais tarde.")
+             elif response.status_code == 403:
+                print("Chatbot: Problema de acesso à API (403). 🔑 Verifique as configurações.")
+        return []
+    except requests.exceptions.RequestException as req_err:
+        print(f"Chatbot: Xi! 😥 Ocorreu um erro de conexão ({req_err}). Verifique sua internet.")
+        return []
+    except Exception as e:
+        print(f"Chatbot: Um erro inesperado aconteceu durante a busca: {e} 🤯")
+        return []
+    return []
+
+
+def chatbot_marketplace_com_google_api():
+    print("Olá! 👋 Bem-vindo ao Assistente de Compras MarketChat.")
+    print("Vou te ajudar a encontrar o que você procura nos melhores e mais seguros marketplaces do Brasil! 🛒")
+    print("É só me dizer o produto que você busca ou digitar 'encerrar' para sair. 💬")
+
+    if not API_KEY or not CSE_ID:
+        print("\nChatbot: ATENÇÃO! ⚠️ As chaves da API do Google não foram encontradas ou não são válidas.")
+        print("Por favor, configure-as corretamente para continuar.")
+        return
+
+    REFINAMENTO_MARKETPLACES = "MarketplacesBR"
+
+    while True:
+        entrada_usuario = input("\nVocê: ")
+        if not entrada_usuario.strip():
+            continue
+
+        termo_buscado_original = entrada_usuario
+        entrada_lower = entrada_usuario.lower()
+
+        if entrada_lower == 'encerrar':
+            print("\nChatbot: Até a próxima! Espero ter sido útil. 😊")
+            break
+
+        print(f"\nChatbot: Entendi! Buscando por '{termo_buscado_original}'... 🧐")
+        print(f"Preparando algumas sugestões para você nos principais marketplaces... 🛍️")
+
+        resultados_online = buscar_produtos_google_shopping(
+            termo_buscado_original,
+            num_resultados_desejados=3,
+            nome_refinamento_cse=REFINAMENTO_MARKETPLACES
+        )
+
+        if resultados_online:
+            num_sugestoes_reais = len(resultados_online)
+            if num_sugestoes_reais > 0:
+                print(f"\nChatbot: Prontinho! 😉 Que tal dar uma olhada nestas {num_sugestoes_reais} opção(ões) para '{termo_buscado_original}'? 👇")
+                for i, res in enumerate(resultados_online):
+                    print(f"\n ✨ Marketplace {i+1} ✨")
+                    print(f"  Nome/Título: {res['nome']}")
+                    print(f"  Loja: {res['loja_display']}")
+                    print(f"  Alguns Detalhes: {res['snippet']}")
+                    print(f"  Visite em: {res['link']}")
+                print("\nChatbot: Ao clicar nos links, você será direcionado para a loja. Lá, você poderá ver todos os detalhes, preços e usar os filtros da própria plataforma para encontrar exatamente o que precisa! 👍")
+            else:
+                # Isso aconteceria se a API retornasse itens, mas todos fossem do mesmo domínio e num_resultados_desejados > 1,
+                # ou se loja_dominio_raiz fosse vazio para todos.
+                print(f"\nChatbot: Puxa! 🙁 Consegui alguns resultados, mas não com a variedade de lojas que esperava para '{termo_buscado_original}'.")
+                print("Chatbot: Você pode tentar ser um pouco mais específico ou usar outras palavras-chave. 💡")
+
+        else:
+            print(f"\nChatbot: Puxa! 🙁 Não consegui encontrar direcionamentos para '{termo_buscado_original}' nos marketplaces que conheço no momento.")
+            print("Chatbot: Você pode tentar ser um pouco mais específico ou usar outras palavras-chave. 💡")
+
+        print("\nChatbot: Quer procurar outro produto? 🕵️‍♀️ (Digite o nome do produto ou 'encerrar')")
+
+if __name__ == '__main__':
+    chatbot_marketplace_com_google_api()
